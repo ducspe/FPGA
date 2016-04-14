@@ -1,0 +1,173 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+use ieee.std_logic_unsigned.all;
+library UNISIM;
+use UNISIM.vcomponents.all;
+
+entity ASYNC_COMMUNICATION_TOPLEVEL is
+port (
+        RESET : in bit;
+        WRCLK_X : in bit; 
+        RDCLK_X : in bit; 
+        ERROR_X : out bit;
+        FULL_X: out bit;
+        HALF_FULL_X : out bit;
+        EMPTY_X: out bit;
+        DISP_DATA : out bit_vector(15 downto 0) 
+      );    
+end entity ASYNC_COMMUNICATION_TOPLEVEL;
+
+architecture SYNTHESIZABLE of ASYNC_COMMUNICATION_TOPLEVEL is
+
+ signal SERIAL_OUT: bit :='1';
+ signal D_CHECK: bit_vector(7 downto 0); 
+ signal CONS_EN : bit:='0';
+---------------------------------------
+
+ type RAM_TYPE is array (0 to 15) of bit_vector (7 downto 0);
+ signal RAM : RAM_TYPE;
+ signal D_CONS : bit_vector(7 downto 0);
+ signal raddr : unsigned(3 downto 0);
+ signal waddr : unsigned(3 downto 0);
+ -- Flags 
+ signal EMPTY : bit;
+ signal HALF_FULL : bit;
+ signal FULL : bit;
+------------------------------------------------------
+  signal D_PROD: bit_vector(7 downto 0); 
+  signal PROD_EN : bit:='0';
+  signal SERIAL_IN: bit :='1';
+---------------------------------------
+  -- for synchronizing the full and empty flags
+  signal CONS_EN1 : bit;
+  signal PROD_EN1 : bit;
+  signal CONS_EN2 : bit; 
+  signal PROD_EN2 : bit;
+ 
+begin 
+-- the PRODUCER is implemented as a left shift register
+-- a random 'SERIAL_IN' bit is appended at the end of the bit stream at each write clock cycle
+PRODUCER: process(WRCLK_X, RESET)
+begin
+  if RESET='1' then
+    D_PROD <= "00000001";
+  elsif WRCLK_X ='1' and WRCLK_X'event then
+    if PROD_EN2 = '1' then -- PROD_EN2 is the output of the second flip flop of the synchronizer
+ 	     if D_PROD = "00000000" then
+   	     	D_PROD <= "00000001" after 5 ns;
+ 	     else
+          D_PROD <= (D_PROD(6 downto 0) & SERIAL_IN) after 5 ns;
+       end if;
+     end if;   
+  end if;
+ end process PRODUCER;
+ SERIAL_IN <= (D_PROD(7) xor D_PROD(3)) xor (D_PROD(2) xor D_PROD(1)) after 5 ns;
+
+-------------------------------------------------------------------------------------
+GENERATE_STATUS_SIGNALS: process (waddr, raddr,RESET)
+	begin  
+	  -- default assignments to avoid latches
+	  FULL <= '0' after 5 ns;
+	  HALF_FULL <= '0' after 5 ns;	  
+	  EMPTY <= '0' after 5 ns;
+	if RESET = '1' then
+	  EMPTY <= '1' after 5 ns;
+	elsif waddr  - raddr <= 1  then 
+		EMPTY <= '1' after 5 ns;
+	elsif waddr - raddr >= 14 then  
+		FULL <= '1' after 5 ns;
+  	elsif waddr - raddr = 8 then 	
+		HALF_FULL <= '1';
+  else 
+	  FULL <= '0' after 5 ns;
+	  HALF_FULL <= '0' after 5 ns;	  
+	  EMPTY <= '0' after 5 ns;
+	end if;
+end process GENERATE_STATUS_SIGNALS;
+EMPTY_X <= EMPTY after 5 ns;
+FULL_X <= FULL after 5 ns;
+HALF_FULL_X <= HALF_FULL after 5 ns;
+PROD_EN <= not FULL after 5 ns; -- PROD_EN is active low
+CONS_EN <= not EMPTY after 5 ns; -- CONS_EN is active low
+---------------------------------------------------------------------------------------
+CONSUMER: process(RDCLK_X, RESET) -- Consumer operates in the read clock domain
+begin
+    if RESET='1' then
+      D_CHECK <= "00000001";
+      ERROR_X <= '0';
+      DISP_DATA <= (others => '0') after 5 ns;
+    elsif RDCLK_X ='1' and RDCLK_X'event then
+      if CONS_EN2 = '1' then -- CONS_EN2 is the output of the second flip flop of the synchronizer
+          if D_CHECK = "00000000" then
+             D_CHECK <= "00000001";
+          else
+             D_CHECK <= (D_CHECK(6 downto 0) & SERIAL_OUT) after 5 ns; -- generate same sequence as in the producer process
+          end if;
+          if D_CONS = D_CHECK then   -- check if the data matches and generate the ERROR signal if it doesn't
+             ERROR_X <= '0' after 5 ns;  
+				 DISP_DATA <= D_CONS & D_CHECK after 5 ns; -- concatenate both values 
+          else
+             ERROR_X <= '1';
+          end if;
+      end if;   
+    end if;
+ end process CONSUMER;
+ SERIAL_OUT <= (D_CHECK(7) xor D_CHECK(3)) xor (D_CHECK(2) xor D_CHECK(1)) after 5 ns;
+   
+-------------------------------------------------------------------------------------------
+
+WRITE_LOGIC: process (WRCLK_X, RESET)  --asynchronous reset
+ 	begin
+	if RESET = '1' then 
+       RAM <= ((others=>(others=>'0'))) after 5 ns; -- RAM memory is cleared
+       waddr <= "0000" after 5 ns;   --adress is set to 0
+	elsif (WRCLK_X'event and WRCLK_X = '1') then
+ 	    if PROD_EN2 = '1' then -- check if it is safe to increment the write pointer
+ 	      waddr <= waddr + 1 after 5 ns; -- increment write address
+ 	      RAM(to_integer(waddr)) <= D_PROD after 5 ns; -- write data in memory
+  	   end if;
+ 	 end if;
+ 	end process WRITE_LOGIC;
+ 
+
+
+READ_LOGIC: process (RDCLK_X, RESET) -- asynchronous reset
+ 	begin
+  if RESET = '1' then 
+      raddr <= "0000" after 5 ns; --address is set to 0
+	elsif (RDCLK_X'event and RDCLK_X = '1') then
+     if CONS_EN2 = '1' then -- check if it is safe to increment the read pointer
+ 	      raddr <= raddr + 1 after 5 ns;   -- increment read address
+ 	   end if;
+	end if;
+end process READ_LOGIC;
+
+ D_CONS <= RAM(to_integer(raddr)) after 5 ns; --read the data from memory
+ 
+
+--------------------------------------------------------------------
+
+SYNC_FULL: process(WRCLK_X, RESET)
+begin
+    if (RESET = '1') then
+       PROD_EN1 <= '0';
+       PROD_EN2 <= '0';
+    elsif (WRCLK_X = '1' and WRCLK_X'event) then
+       PROD_EN1 <= PROD_EN;
+       PROD_EN2 <= PROD_EN1;
+    end if;
+end process SYNC_FULL;
+
+SYNC_EMPTY: process(RDCLK_X, RESET)
+begin
+    if RESET = '1' then
+       CONS_EN1 <= '0';
+       CONS_EN2 <= '0';
+    elsif RDCLK_X  = '1' and RDCLK_X 'event then 
+       CONS_EN1 <= CONS_EN;
+       CONS_EN2 <= CONS_EN;
+    end if;
+end process SYNC_EMPTY;
+
+end architecture SYNTHESIZABLE;

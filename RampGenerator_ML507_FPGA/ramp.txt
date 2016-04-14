@@ -1,0 +1,164 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.std_logic_unsigned.all;
+use ieee.numeric_std.all;
+
+entity S_SHAPE_VOLTAGE_RAMP is
+port (
+		 CLK: in bit;
+       RST: in bit;
+		 YofX: out std_logic_vector(7 downto 0); 
+       FWD_BACK: in bit;
+		 XV: out std_logic_vector(7 downto 0);
+       LOAD: in bit      
+      );
+end entity S_SHAPE_VOLTAGE_RAMP;
+
+--------------------------------------------------------------------------------------
+
+architecture RTL of S_SHAPE_VOLTAGE_RAMP is
+
+type STATE_TYPE is(IDLE, Z1, Z2, Z3);
+signal STATE, NEXT_STATE : STATE_TYPE;
+
+signal Reg0: std_logic_vector(7 downto 0);
+signal Reg1: std_logic_vector(7 downto 0);
+
+signal EN_MUX: bit;
+signal EN_Reg0: bit;
+signal EN_Reg1: bit;
+signal EN_OUTPUTREG : bit;
+
+signal X_IN: std_logic_vector(7 downto 0);
+signal T: std_logic_vector(15 downto 0);
+signal PROD: std_logic_vector(7 downto 0);
+signal FUNC_VALUE: std_logic_vector(7 downto 0);
+signal DOUBLE: std_logic_vector(7 downto 0);
+signal MUX1: std_logic_vector(7 downto 0);
+
+signal DONE: bit;
+
+begin
+
+   MULTIPLEXER: process(X_IN, PROD, EN_MUX)
+   begin
+       if EN_MUX = '1' then
+           MUX1 <= PROD;
+       else
+     	     MUX1 <= X_IN;     
+       end if;
+   end process MULTIPLEXER;
+   
+
+    Register0: process(CLK, RST)
+    begin
+        if RST = '1' then
+           Reg0 <= (others=> '0');
+        elsif CLK'event and CLK = '1' then 
+           if EN_Reg0 = '1' then
+               Reg0 <= MUX1;
+           end if;    
+        end if;
+    end process Register0;    
+    
+    Register1: process(CLK, RST)
+    begin
+        if RST = '1' then
+           Reg1 <= (others=> '0');
+        elsif CLK'event and CLK = '1' then 
+           if EN_Reg1 = '1' then
+               Reg1 <= DOUBLE;
+           end if;    
+        end if;
+    end process Register1;
+    
+
+ ----------------------------------------------------------------------------------------------------------------   
+
+
+
+    COUNTER_FOR_X: process(CLK, RST)
+    begin
+        if RST = '1' then
+            X_IN <= "00000000";		
+		  elsif CLK'event and CLK = '1' then
+				if DONE = '1' then
+					if FWD_BACK = '1' then
+						if X_IN /= "01111010" then
+                     X_IN <= X_IN + 1;   
+                  end if;
+					else
+						if X_IN /= "00000000" then
+                     X_IN <= X_IN - 1;
+                  end if;
+					end if;		
+				end if;
+       end if; 
+    end process COUNTER_FOR_X;
+
+
+    FUNCTIONVALUE: process(CLK, RST)
+    begin
+        if RST = '1' then
+            YofX <= (others=> '0');
+        elsif CLK'event and CLK = '1' then
+            if EN_OUTPUTREG  = '1' then
+               YofX <= FUNC_VALUE;
+            end if;
+        end if;
+     end process FUNCTIONVALUE;
+
+
+-------------------------------------------------------------------------------------------------------------------------
+
+
+	REGISTER_STATES: process(CLK, RST)
+    begin
+       if RST = '1' then
+          STATE <= IDLE;
+       elsif CLK'event and CLK = '1' then
+          STATE <= NEXT_STATE;
+       end if;
+    end process REGISTER_STATES;
+
+
+
+                    
+    MEALY: process(STATE, LOAD)
+    begin
+
+       EN_Reg0 <= '1'; 
+       EN_Reg1 <= '0';
+       EN_MUX <= '1';
+       EN_OUTPUTREG <= '0';
+       NEXT_STATE <= IDLE;
+       DONE <= '0'; 
+		 
+       case STATE is 
+           when IDLE =>
+               EN_MUX <= '0';
+               if LOAD = '1' then 
+                  NEXT_STATE <= Z1;
+               else
+                  NEXT_STATE <= IDLE;
+               end if;
+            when Z1 =>
+               NEXT_STATE <= Z2;
+            when Z2 =>
+	            EN_Reg1 <= '1';
+               NEXT_STATE <= Z3;
+            when Z3 => 
+               	    EN_OUTPUTREG <= '1';
+	            EN_Reg1 <= '1';
+	            DONE <= '1';
+               NEXT_STATE <= IDLE;
+       end case;
+    end process MEALY;   
+	 
+	 T <= (Reg0 * Reg0);
+	 PROD <= T (14 downto 7);
+	 DOUBLE <= Reg0(6 downto 0) & '0';
+	 FUNC_VALUE <= Reg1 - Reg0;
+	 XV <= X_IN;
+          
+ end architecture RTL;      
